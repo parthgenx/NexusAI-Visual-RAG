@@ -12,6 +12,11 @@ function App() {
   const [file, setFile] = useState(null);
   const [uploadStatus, setUploadStatus] = useState("idle");
 
+  // 1. DYNAMIC URL CONFIGURATION
+  // This automatically uses your Vercel Environment Variable.
+  // If running locally, it falls back to localhost.
+  const API_URL = import.meta.env.VITE_API_URL || "http://127.0.0.1:8000";
+
   const handleFileChange = (e) => {
     if (e.target.files && e.target.files[0]) {
       setFile(e.target.files[0]);
@@ -26,7 +31,8 @@ function App() {
     formData.append("file", file);
 
     try {
-      await axios.post("https://nexusai-visual-rag.onrender.com", formData, {
+      // 2. FIXED ENDPOINT: Added "/upload"
+      await axios.post(`${API_URL}/upload`, formData, {
         headers: { "Content-Type": "multipart/form-data" },
       });
       setUploadStatus("success");
@@ -42,7 +48,8 @@ function App() {
     setResponse("");
 
     try {
-      const res = await axios.post("https://nexusai-visual-rag.onrender.com", {
+      // 3. FIXED ENDPOINT: Added "/chat"
+      const res = await axios.post(`${API_URL}/chat`, {
         prompt: prompt,
       });
       setResponse(res.data.response);
@@ -101,7 +108,6 @@ function App() {
                         <div className="flex gap-4">
                             <div className="w-8 h-8 rounded-full bg-gradient-to-tr from-indigo-500 to-purple-500 flex-shrink-0 flex items-center justify-center font-bold text-xs">AI</div>
                             
-                            {/* FIX: Move className to this wrapper div */}
                             <div className="bg-slate-800/50 p-6 rounded-2xl rounded-tl-none border border-slate-700 text-slate-300 w-full overflow-x-auto prose prose-invert max-w-none prose-p:leading-relaxed prose-pre:bg-slate-900 prose-headings:text-indigo-300 prose-a:text-blue-400">
                                 <ReactMarkdown
                                     remarkPlugins={[remarkMath]}
