@@ -1,0 +1,16 @@
+.env
+backend/.env
+frontend/.env
+
+# Ignore Python dependencies & cache
+__pycache__/
+venv/
+*.pyc
+
+# Ignore Node modules
+node_modules/
+dist/
+.DS_Store
+
+# Ignore uploaded temp files
+temp_*
