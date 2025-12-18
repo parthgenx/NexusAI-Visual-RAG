@@ -1,11 +1,10 @@
-from fastapi import FastAPI, HTTPException, UploadFile, File
+from fastapi import FastAPI, HTTPException, UploadFile, File, BackgroundTasks
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from dotenv import load_dotenv
 import os
 from openai import OpenAI
 from pinecone import Pinecone
-# REMOVED: from sentence_transformers import SentenceTransformer  <-- REMOVE THIS
 import nest_asyncio
 from llama_parse import LlamaParse
 
@@ -34,8 +33,6 @@ def get_embedding_model():
     """Loads the library AND model only when specifically asked for."""
     if "model" not in model_cache:
         print("Importing AI Library... (This is the heavy part)")
-        # WE IMPORT IT HERE NOW. 
-        # The server starts instantly because this line hasn't run yet!
         from sentence_transformers import SentenceTransformer 
         
         print("Loading Embedding Model...")
@@ -48,14 +45,14 @@ app = FastAPI()
 # --- CORS: Explicitly Allow Vercel 🔒 ---
 origins = [
     "http://localhost:5173",                      # Allow Local Development
-    "https://nexus-ai-visual-rag.vercel.app",     # Allow Vercel (EXACT URL from your error)
-    "https://nexus-ai-visual-rag.vercel.app/"     # Just in case (with slash)
+    "https://nexus-ai-visual-rag.vercel.app",     # Allow Vercel (EXACT URL)
+    "https://nexus-ai-visual-rag.vercel.app/"     # With slash just in case
 ]
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=origins,       # 👈 We list the exact friends allowed
-    allow_credentials=True,      # 👈 This is crucial!
+    allow_origins=origins,       
+    allow_credentials=True,      
     allow_methods=["*"],
     allow_headers=["*"],
 )
@@ -65,26 +62,21 @@ class ChatRequest(BaseModel):
 
 @app.get("/")
 def read_root():
-    return {"message": "Pinecone RAG Backend (Super-Lazy Edition) is Active 🌲🦙"}
+    return {"message": "NexusAI Backend is Active 🟢"}
 
-# --- ROUTE 1: Upload & Memorize 📂 ---
-@app.post("/upload")
-async def upload_document(file: UploadFile = File(...)):
-    temp_filename = f"temp_{file.filename}"
-    
+# --- BACKGROUND TASK: The Heavy Lifter 🏋️‍♂️ ---
+def process_upload_background(temp_filename: str):
+    print(f"Started background processing for {temp_filename}...")
     try:
+        # 1. Clear Memory (Safe Mode)
         try:
-            # Try to wipe memory. If it fails (because it's empty), just ignore it.
-            index.delete(delete_all=True) 
+            index.delete(delete_all=True)
+            print("Memory cleared.")
         except Exception:
-            pass 
+            print("Memory was already empty, skipping delete.")
 
-        # Step A: Save File
-        with open(temp_filename, "wb") as buffer:
-            content = await file.read()
-            buffer.write(content)
-
-        # Step B: Parse (LlamaParse)
+        # 2. Parse (LlamaParse)
+        print("Sending to LlamaParse...")
         parser = LlamaParse(
             api_key=llama_cloud_api_key,
             result_type="markdown", 
@@ -92,68 +84,91 @@ async def upload_document(file: UploadFile = File(...)):
             verbose=True,
             language="en"
         )
-        documents = await parser.aload_data(temp_filename)
+        # Use sync load_data inside background thread
+        documents = parser.load_data(temp_filename)
         
         text = ""
         for doc in documents:
             text += doc.text
             
         if not text:
-            return {"error": "LlamaParse could not extract text."}
+            print("Error: No text extracted.")
+            return
        
-        # Step C: Chunk
+        # 3. Chunk
+        print("Chunking text...")
         chunk_size = 500
         chunks = [text[i:i+chunk_size] for i in range(0, len(text), chunk_size)]
        
-        # Step D: Embed (Using Super-Lazy Loader)
+        # 4. Embed & Upsert
+        print("Embedding chunks...")
         model = get_embedding_model() 
-        
         vectors = []
         for i, chunk in enumerate(chunks):
             vector_embedding = model.encode(chunk).tolist()
             vectors.append({
-                "id": f"{file.filename}_{i}",
+                "id": f"chunk_{i}",
                 "values": vector_embedding,
                 "metadata": {"text": chunk}
             })
 
-        index.upsert(vectors=vectors)
+        # Batch upsert to prevent network timeouts
+        print(f"Upserting {len(vectors)} vectors to Pinecone...")
+        batch_size = 100
+        for i in range(0, len(vectors), batch_size):
+            batch = vectors[i:i+batch_size]
+            index.upsert(vectors=batch)
 
-        return {"status": "success", "chunks_stored": len(chunks)}
+        print(f"✅ Success! Document processed and stored.")
 
     except Exception as e:
-        print(f"Upload Error: {e}")
-        return {"error": str(e)}
+        print(f"❌ Background Task Failed: {e}")
     
     finally:
+        # Cleanup file
         if os.path.exists(temp_filename):
             os.remove(temp_filename)
+            print("Temp file cleaned up.")
+
+# --- ROUTE 1: Upload (Fast & Async) ⚡ ---
+@app.post("/upload")
+async def upload_document(file: UploadFile = File(...), background_tasks: BackgroundTasks):
+    # Save the file locally first
+    temp_filename = f"temp_{file.filename}"
+    with open(temp_filename, "wb") as buffer:
+        content = await file.read()
+        buffer.write(content)
+
+    # Hand off the heavy work to the background
+    background_tasks.add_task(process_upload_background, temp_filename)
+
+    # Reply to Frontend IMMEDIATELY
+    return {"status": "success", "message": "Processing started in background"}
 
 # --- ROUTE 2: Chat with Memory 🧠 ---
 @app.post("/chat")
 def generate_chat(request: ChatRequest):
     try:
         user_query = request.prompt.lower()
-        general_keywords = ["summarize", "summary", "explain the pdf", "explain the document", "what is this", "page"]
+        general_keywords = ["summarize", "summary", "explain", "what is this", "page"]
         
         is_general_query = any(keyword in user_query for keyword in general_keywords)
         
-        # Load Model (Super-Lazy)
+        # Load Model (Lazy)
         model = get_embedding_model()
         question_embedding = model.encode(request.prompt).tolist()
         
+        # Search Vector DB
         if is_general_query:
-            # High Context Mode (200 Chunks)
             search_results = index.query(
                 vector=question_embedding,
                 top_k=200, 
                 include_metadata=True
             )
         else:
-            # Specific Mode
             search_results = index.query(
                 vector=question_embedding,
-                top_k=5, 
+                top_k=10, 
                 include_metadata=True
             )
 
@@ -163,7 +178,9 @@ def generate_chat(request: ChatRequest):
                 context_text += match['metadata']['text'] + "\n---\n"
 
         system_prompt = f"""
-        You are a helpful assistant. Use the provided Context to answer the user's question.
+        You are a helpful AI assistant. Use the Context below to answer the user's question.
+        If the answer isn't in the context, say "I couldn't find that information in the document."
+        
         Context:
         {context_text}
         """
@@ -175,7 +192,7 @@ def generate_chat(request: ChatRequest):
                 {"role": "user", "content": request.prompt}
             ]
         )
-       
+        
         return {"response": response.choices[0].message.content}
 
     except Exception as e:
