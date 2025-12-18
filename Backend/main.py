@@ -5,7 +5,7 @@ from dotenv import load_dotenv
 import os
 from openai import OpenAI
 from pinecone import Pinecone
-from sentence_transformers import SentenceTransformer
+# REMOVED: from sentence_transformers import SentenceTransformer  <-- REMOVE THIS
 import nest_asyncio
 from llama_parse import LlamaParse
 
@@ -27,14 +27,18 @@ client = OpenAI(
 pc = Pinecone(api_key=pinecone_api_key)
 index = pc.Index(pinecone_index_name)
 
-# --- LAZY LOADING SETUP ---
-# We do NOT load the model here anymore. It kills the server startup time.
+# --- SUPER LAZY LOADING ---
 model_cache = {}
 
 def get_embedding_model():
-    """Loads the model only when specifically asked for."""
+    """Loads the library AND model only when specifically asked for."""
     if "model" not in model_cache:
-        print("Loading Embedding Model... (This might take a moment)")
+        print("Importing AI Library... (This is the heavy part)")
+        # WE IMPORT IT HERE NOW. 
+        # The server starts instantly because this line hasn't run yet!
+        from sentence_transformers import SentenceTransformer 
+        
+        print("Loading Embedding Model...")
         model_cache["model"] = SentenceTransformer('all-MiniLM-L6-v2')
         print("Model Loaded!")
     return model_cache["model"]
@@ -53,7 +57,7 @@ class ChatRequest(BaseModel):
 
 @app.get("/")
 def read_root():
-    return {"message": "Pinecone RAG Backend (Lazy Load Edition) is Active 🌲🦙"}
+    return {"message": "Pinecone RAG Backend (Super-Lazy Edition) is Active 🌲🦙"}
 
 # --- ROUTE 1: Upload & Memorize 📂 ---
 @app.post("/upload")
@@ -90,8 +94,7 @@ async def upload_document(file: UploadFile = File(...)):
         chunk_size = 500
         chunks = [text[i:i+chunk_size] for i in range(0, len(text), chunk_size)]
        
-        # Step D: Embed (Using Lazy Loader)
-        # Call the function now. First time might take 5-10s.
+        # Step D: Embed (Using Super-Lazy Loader)
         model = get_embedding_model() 
         
         vectors = []
@@ -124,12 +127,12 @@ def generate_chat(request: ChatRequest):
         
         is_general_query = any(keyword in user_query for keyword in general_keywords)
         
-        # Load Model (Lazy)
+        # Load Model (Super-Lazy)
         model = get_embedding_model()
         question_embedding = model.encode(request.prompt).tolist()
         
         if is_general_query:
-            # High Context Mode
+            # High Context Mode (200 Chunks)
             search_results = index.query(
                 vector=question_embedding,
                 top_k=200, 
