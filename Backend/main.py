@@ -65,8 +65,11 @@ async def upload_document(file: UploadFile = File(...)):
     temp_filename = f"temp_{file.filename}"
     
     try:
-        # Wipe Memory on new upload
-        index.delete(delete_all=True) 
+        try:
+            # Try to wipe memory. If it fails (because it's empty), just ignore it.
+            index.delete(delete_all=True) 
+        except Exception:
+            pass 
 
         # Step A: Save File
         with open(temp_filename, "wb") as buffer:
