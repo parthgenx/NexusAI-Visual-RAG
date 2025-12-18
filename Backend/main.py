@@ -45,9 +45,17 @@ def get_embedding_model():
 
 app = FastAPI()
 
+# --- CORS: Explicitly Allow Vercel 🔒 ---
+origins = [
+    "http://localhost:5173",                      # Allow Local Development
+    "https://nexus-ai-visual-rag.vercel.app",     # Allow Vercel (EXACT URL from your error)
+    "https://nexus-ai-visual-rag.vercel.app/"     # Just in case (with slash)
+]
+
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=origins,       # 👈 We list the exact friends allowed
+    allow_credentials=True,      # 👈 This is crucial!
     allow_methods=["*"],
     allow_headers=["*"],
 )
