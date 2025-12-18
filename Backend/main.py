@@ -27,7 +27,17 @@ client = OpenAI(
 pc = Pinecone(api_key=pinecone_api_key)
 index = pc.Index(pinecone_index_name)
 
-embedding_model = SentenceTransformer('all-MiniLM-L6-v2')
+# --- LAZY LOADING SETUP ---
+# We do NOT load the model here anymore. It kills the server startup time.
+model_cache = {}
+
+def get_embedding_model():
+    """Loads the model only when specifically asked for."""
+    if "model" not in model_cache:
+        print("Loading Embedding Model... (This might take a moment)")
+        model_cache["model"] = SentenceTransformer('all-MiniLM-L6-v2')
+        print("Model Loaded!")
+    return model_cache["model"]
 
 app = FastAPI()
 
@@ -43,7 +53,7 @@ class ChatRequest(BaseModel):
 
 @app.get("/")
 def read_root():
-    return {"message": "Pinecone RAG Backend (LlamaParse Edition) is Active 🌲🦙"}
+    return {"message": "Pinecone RAG Backend (Lazy Load Edition) is Active 🌲🦙"}
 
 # --- ROUTE 1: Upload & Memorize 📂 ---
 @app.post("/upload")
@@ -51,15 +61,15 @@ async def upload_document(file: UploadFile = File(...)):
     temp_filename = f"temp_{file.filename}"
     
     try:
-        # 1. Save File to Disk
+        # Wipe Memory on new upload
+        index.delete(delete_all=True) 
 
-        index.delete(delete_all=True)
-        
+        # Step A: Save File
         with open(temp_filename, "wb") as buffer:
             content = await file.read()
             buffer.write(content)
 
-        # 2. Parse File from Disk
+        # Step B: Parse (LlamaParse)
         parser = LlamaParse(
             api_key=llama_cloud_api_key,
             result_type="markdown", 
@@ -69,21 +79,24 @@ async def upload_document(file: UploadFile = File(...)):
         )
         documents = await parser.aload_data(temp_filename)
         
-        # 3. Process Text
         text = ""
         for doc in documents:
             text += doc.text
             
         if not text:
-            return {"error": "LlamaParse could not extract text from this file."}
+            return {"error": "LlamaParse could not extract text."}
        
-        # 4. Chunk & Embed
+        # Step C: Chunk
         chunk_size = 500
         chunks = [text[i:i+chunk_size] for i in range(0, len(text), chunk_size)]
        
+        # Step D: Embed (Using Lazy Loader)
+        # Call the function now. First time might take 5-10s.
+        model = get_embedding_model() 
+        
         vectors = []
         for i, chunk in enumerate(chunks):
-            vector_embedding = embedding_model.encode(chunk).tolist()
+            vector_embedding = model.encode(chunk).tolist()
             vectors.append({
                 "id": f"{file.filename}_{i}",
                 "values": vector_embedding,
@@ -106,45 +119,37 @@ async def upload_document(file: UploadFile = File(...)):
 @app.post("/chat")
 def generate_chat(request: ChatRequest):
     try:
-        # --- LOGIC UPGRADE: Detect General/Navigation Questions ---
         user_query = request.prompt.lower()
         general_keywords = ["summarize", "summary", "explain the pdf", "explain the document", "what is this", "page"]
         
         is_general_query = any(keyword in user_query for keyword in general_keywords)
         
-        question_embedding = embedding_model.encode(request.prompt).tolist()
+        # Load Model (Lazy)
+        model = get_embedding_model()
+        question_embedding = model.encode(request.prompt).tolist()
         
         if is_general_query:
-            # BROADCAST MODE: Fetch MUCH more context (Top 20 chunks = approx 10k chars)
-            # This gives the AI a "Bird's Eye View" of the document
+            # High Context Mode
             search_results = index.query(
                 vector=question_embedding,
-                top_k=20, # <--- INCREASED FROM 2 TO 20
+                top_k=200, 
                 include_metadata=True
             )
         else:
-            # SNIPER MODE: Fetch specific context (Top 3 chunks)
-            # This keeps answers precise for specific questions
+            # Specific Mode
             search_results = index.query(
                 vector=question_embedding,
-                top_k=3,
+                top_k=5, 
                 include_metadata=True
             )
 
-        # Build Context
         context_text = ""
         for match in search_results['matches']:
-            if 'metadata' in match and 'text' in match['metadata']:
+            if 'metadata' in match:
                 context_text += match['metadata']['text'] + "\n---\n"
 
         system_prompt = f"""
         You are a helpful assistant. Use the provided Context to answer the user's question.
-        
-        Important:
-        - If the user asks for a summary or about a specific page, use the Context provided to infer the answer.
-        - The Context may contain the page numbers or sequential text.
-        - If you really cannot find the answer, say "I don't have enough context to answer that."
-        
         Context:
         {context_text}
         """
