@@ -131,8 +131,9 @@ def process_upload_background(temp_filename: str):
             print("Temp file cleaned up.")
 
 # --- ROUTE 1: Upload (Fast & Async) ⚡ ---
+# FIX: Swapped arguments so background_tasks (no default) comes first!
 @app.post("/upload")
-async def upload_document(file: UploadFile = File(...), background_tasks: BackgroundTasks):
+async def upload_document(background_tasks: BackgroundTasks, file: UploadFile = File(...)):
     # Save the file locally first
     temp_filename = f"temp_{file.filename}"
     with open(temp_filename, "wb") as buffer:
