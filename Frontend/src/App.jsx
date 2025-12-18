@@ -26,7 +26,7 @@ function App() {
     formData.append("file", file);
 
     try {
-      await axios.post("http://127.0.0.1:8000/upload", formData, {
+      await axios.post("https://nexusai-visual-rag.onrender.com", formData, {
         headers: { "Content-Type": "multipart/form-data" },
       });
       setUploadStatus("success");
@@ -42,7 +42,7 @@ function App() {
     setResponse("");
 
     try {
-      const res = await axios.post("http://127.0.0.1:8000/chat", {
+      const res = await axios.post("https://nexusai-visual-rag.onrender.com", {
         prompt: prompt,
       });
       setResponse(res.data.response);
