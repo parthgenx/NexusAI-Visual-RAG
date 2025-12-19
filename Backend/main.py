@@ -7,14 +7,14 @@ import uuid
 import tempfile
 import gc
 
-# 1. Setup Environment
+
 load_dotenv()
 groq_api_key = os.getenv("GROQ_API_KEY")
 pinecone_api_key = os.getenv("PINECONE_API_KEY")
 pinecone_index_name = os.getenv("PINECONE_INDEX_NAME")
 llama_cloud_api_key = os.getenv("LLAMA_CLOUD_API_KEY")
 
-# Validate required API keys at startup
+
 required_keys = {
     "GROQ_API_KEY": groq_api_key,
     "PINECONE_API_KEY": pinecone_api_key,
@@ -25,7 +25,6 @@ for key_name, key_value in required_keys.items():
     if not key_value:
         raise ValueError(f"Missing required environment variable: {key_name}")
 
-# Cross-platform temp directory
 temp_dir = tempfile.gettempdir()
 os.environ["FASTEMBED_CACHE_PATH"] = temp_dir
 
@@ -37,7 +36,7 @@ from fastembed import TextEmbedding
 
 nest_asyncio.apply()
 
-# Initialize Clients
+
 client = OpenAI(
     api_key=groq_api_key,
     base_url="https://api.groq.com/openai/v1"
@@ -46,7 +45,6 @@ client = OpenAI(
 pc = Pinecone(api_key=pinecone_api_key)
 index = pc.Index(pinecone_index_name)
 
-# Lazy-loaded embedding model
 model_cache = {}
 
 def get_embedding_model():
@@ -61,10 +59,6 @@ def get_embedding_model():
 
 
 def smart_chunk_text(text: str, chunk_size: int = 800, overlap: int = 100) -> list[str]:
-    """
-    Chunk text by sentences with overlap. 
-    Using larger chunks (800) to reduce total count and memory usage.
-    """
     import re
     text = ' '.join(text.split())
     sentences = re.split(r'(?<=[.!?])\s+', text)
@@ -87,14 +81,14 @@ def smart_chunk_text(text: str, chunk_size: int = 800, overlap: int = 100) -> li
     return chunks
 
 
-# Allowed file types
+
 ALLOWED_EXTENSIONS = {'.pdf', '.docx', '.doc', '.txt', '.md', '.pptx', '.xlsx'}
 MAX_FILE_SIZE_MB = 50
 
 
 app = FastAPI()
 
-# CORS
+
 origins = [
     "http://localhost:5173",
     "https://nexus-ai-visual-rag.vercel.app",
@@ -119,12 +113,8 @@ def read_root():
 
 @app.post("/upload")
 async def upload_document(file: UploadFile = File(...)):
-    """
-    Memory-optimized upload that processes chunks in streaming batches.
-    Designed to work within Render's 512MB free tier limit.
-    """
     
-    # Validate file extension
+
     file_ext = os.path.splitext(file.filename)[1].lower()
     if file_ext not in ALLOWED_EXTENSIONS:
         raise HTTPException(
@@ -134,7 +124,7 @@ async def upload_document(file: UploadFile = File(...)):
     
     content = await file.read()
     
-    # Validate file size
+
     file_size_mb = len(content) / (1024 * 1024)
     if file_size_mb > MAX_FILE_SIZE_MB:
         raise HTTPException(
@@ -148,28 +138,28 @@ async def upload_document(file: UploadFile = File(...)):
         with open(temp_filename, "wb") as buffer:
             buffer.write(content)
         
-        # Free the content from memory immediately
+
         del content
         gc.collect()
         
-        # Clear existing vectors
+
         print("Clearing existing vectors...")
         try:
             index.delete(delete_all=True)
         except Exception:
             pass
 
-        # Parse document
+
         print(f"Parsing {file.filename}...")
         parser = LlamaParse(
             api_key=llama_cloud_api_key,
             result_type="markdown", 
-            num_workers=2,  # Reduced workers to save memory
+            num_workers=2,
             language="en"
         )
         documents = parser.load_data(temp_filename)
         
-        # Extract text and immediately free documents
+
         text = ""
         for doc in documents:
             text += doc.text
@@ -179,11 +169,11 @@ async def upload_document(file: UploadFile = File(...)):
         if not text:
             raise HTTPException(status_code=400, detail="No text extracted from document.")
        
-        # Chunk with larger size to reduce count
+
         print("Chunking...")
         chunks = smart_chunk_text(text, chunk_size=800, overlap=100)
         
-        # Free the full text
+
         del text
         gc.collect()
         
@@ -192,19 +182,19 @@ async def upload_document(file: UploadFile = File(...)):
         
         print(f"Processing {len(chunks)} chunks in batches...")
         
-        # MEMORY OPTIMIZATION: Process in small streaming batches
+
         model = get_embedding_model()
-        batch_size = 10  # Process 10 chunks at a time
+        batch_size = 10
         total_upserted = 0
         
         for batch_start in range(0, len(chunks), batch_size):
             batch_end = min(batch_start + batch_size, len(chunks))
             batch_chunks = chunks[batch_start:batch_end]
             
-            # Generate embeddings for this small batch only
+
             embeddings = list(model.embed(batch_chunks))
             
-            # Create vectors for this batch
+
             vectors = []
             for i, (chunk, embedding) in enumerate(zip(batch_chunks, embeddings)):
                 vectors.append({
@@ -213,17 +203,17 @@ async def upload_document(file: UploadFile = File(...)):
                     "metadata": {"text": chunk}
                 })
             
-            # Upsert immediately
+
             index.upsert(vectors=vectors)
             total_upserted += len(vectors)
             
-            # Free batch memory
+
             del embeddings, vectors, batch_chunks
             gc.collect()
             
             print(f"  Upserted batch {batch_start//batch_size + 1}: {total_upserted}/{len(chunks)} chunks")
 
-        # Free chunks list
+
         del chunks
         gc.collect()
 
@@ -266,7 +256,7 @@ def generate_chat(request: ChatRequest):
             if 'metadata' in match:
                 context_text += match['metadata']['text'] + "\n---\n"
 
-        # Free search results
+
         del search_results
         gc.collect()
 
