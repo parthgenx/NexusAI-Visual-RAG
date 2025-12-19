@@ -3,12 +3,6 @@ from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from dotenv import load_dotenv
 import os
-from openai import OpenAI
-from pinecone import Pinecone
-import nest_asyncio
-from llama_parse import LlamaParse
-# 👇 THIS IS THE KEY CHANGE
-from fastembed import TextEmbedding 
 
 # 1. Setup Environment
 load_dotenv()
@@ -16,6 +10,15 @@ groq_api_key = os.getenv("GROQ_API_KEY")
 pinecone_api_key = os.getenv("PINECONE_API_KEY")
 pinecone_index_name = os.getenv("PINECONE_INDEX_NAME")
 llama_cloud_api_key = os.getenv("LLAMA_CLOUD_API_KEY")
+
+# 👇 FIX: Force FastEmbed to use the writable /tmp folder (CRITICAL FOR RENDER)
+os.environ["FASTEMBED_CACHE_PATH"] = "/tmp"
+
+from openai import OpenAI
+from pinecone import Pinecone
+import nest_asyncio
+from llama_parse import LlamaParse
+from fastembed import TextEmbedding 
 
 nest_asyncio.apply()
 
@@ -28,14 +31,17 @@ client = OpenAI(
 pc = Pinecone(api_key=pinecone_api_key)
 index = pc.Index(pinecone_index_name)
 
-# --- LIGHTWEIGHT LOADING (NO PYTORCH) ---
+# --- LIGHTWEIGHT LOADING ---
 model_cache = {}
 
 def get_embedding_model():
     if "model" not in model_cache:
         print("Loading FastEmbed Model...")
-        # This uses ONNX (Lightweight) instead of PyTorch (Heavy)
-        model_cache["model"] = TextEmbedding(model_name="BAAI/bge-small-en-v1.5")
+        # uses the /tmp cache we defined above
+        model_cache["model"] = TextEmbedding(
+            model_name="BAAI/bge-small-en-v1.5",
+            cache_dir="/tmp"
+        )
         print("Model Loaded!")
     return model_cache["model"]
 
@@ -96,7 +102,6 @@ def process_upload_background(temp_filename: str):
         print("Embedding (FastEmbed)...")
         model = get_embedding_model() 
         
-        # FastEmbed is different: it takes a list and returns a generator
         embeddings_generator = model.embed(chunks)
         embeddings_list = list(embeddings_generator)
         
@@ -137,14 +142,11 @@ async def upload_document(background_tasks: BackgroundTasks, file: UploadFile = 
 @app.post("/chat")
 def generate_chat(request: ChatRequest):
     try:
-        # Load Model
         model = get_embedding_model()
         
-        # FastEmbed Syntax
         query_embedding_gen = model.embed([request.prompt])
         query_embedding = list(query_embedding_gen)[0].tolist()
         
-        # Search
         search_results = index.query(
             vector=query_embedding,
             top_k=10, 
